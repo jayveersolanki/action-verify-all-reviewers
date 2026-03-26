@@ -1,0 +1,25 @@
+name: Verify All Reviewers
+
+on:
+  pull_request_review:
+
+  workflow_dispatch:
+
+jobs:
+  approved:
+    name: Verify All Reviewers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR
+        id: get_pr_number
+        run: echo "##[set-output name=pr_number;]$(echo ${{ github.event.pull_request.number }})"
+
+      - name: Verify Reviewers
+        id: verify_reviewers
+        uses: jayveersolanki/action-verify-all-reviewers@v1
+        with:
+            event_name: ${{ github.event_name }}
+            owner: ${{ github.repository_owner }}
+            repo: ${{ github.event.repository.name }}
+            token: ${{ secrets.GITHUB_TOKEN }}
+            pr_number: ${{ steps.get_pr_number.outputs.pr_number }}
