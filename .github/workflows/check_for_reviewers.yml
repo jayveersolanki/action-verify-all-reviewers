@@ -8,18 +8,20 @@ on:
 jobs:
   approved:
     name: Check for Reviewers
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
+      - uses: actions/checkout@v3.0.0
+
       - name: Get PR
         id: get_pr_number
         run: echo "##[set-output name=pr_number;]$(echo ${{ github.event.pull_request.number }})"
 
       - name: Check for Reviewers
         id: check_reviewers
-        uses: jayveersolanki/action-verify-all-reviewers@v1
+        uses: jupiterone/action-verify-all-reviewers@v1
         with:
             event_name: ${{ github.event_name }}
             owner: ${{ github.repository_owner }}
             repo: ${{ github.event.repository.name }}
-            token: ${{ secrets.GITHUB_TOKEN }}
+            token: ${{ secrets.GT_PIT }}
             pr_number: ${{ steps.get_pr_number.outputs.pr_number }}
