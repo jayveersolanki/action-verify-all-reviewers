@@ -1,7 +1,7 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 
-// Bots/Copilot users to always exclude
+// All bot/Copilot variants (always lowercase)
 const EXCLUDED_REVIEWERS = [
   "copilot",
   "github-copilot",
@@ -12,40 +12,40 @@ const EXCLUDED_REVIEWERS = [
 
 const main = async () => {
   try {
-
-    const eventName  = core.getInput('event_name', { required: true });
-    const owner      = core.getInput('owner', { required: true });
-    const repo       = core.getInput('repo', { required: true });
-    const token      = core.getInput('token', { required: true });
+    const eventName = core.getInput('event_name', { required: true });
+    const owner = core.getInput('owner', { required: true });
+    const repo = core.getInput('repo', { required: true });
+    const token = core.getInput('token', { required: true });
     const pullNumber = core.getInput('pr_number', { required: true });
 
     const octokit = github.getOctokit(token);
 
-    // Retrieve PR details
+    // Fetch PR details
     const { data: pullRequest } = await octokit.rest.pulls.get({
       owner,
       repo,
       pull_number: pullNumber
     });
 
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
     // 1. PROCESS INDIVIDUAL REVIEWERS
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
     const rawReviewers = pullRequest.requested_reviewers || [];
 
     const humanReviewers = rawReviewers
-      .map(r => r.login)
+      .map(r => r.login.toLowerCase()) // Normalize case
       .filter(login => !EXCLUDED_REVIEWERS.includes(login));
 
-    // -------------------------------------------------------------------
-    // 2. PROCESS TEAM REVIEWERS
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
+    // 2. PROCESS TEAM REVIEWERS (Option B: one member approval)
+    // -----------------------------------------------------------
     const rawTeams = pullRequest.requested_teams || [];
 
-    // Teams require only ONE approval from ANY member
-    const teamNames = rawTeams.map(t => t.slug);
+    const teamNames = rawTeams
+      .map(t => t.slug.toLowerCase())
+      .filter(slug => !EXCLUDED_REVIEWERS.includes(slug));
 
-    // If ANY reviewer (team or user) still pending → FAIL
+    // Still pending reviewers?
     if (humanReviewers.length > 0 || teamNames.length > 0) {
       const msg = [];
 
@@ -59,9 +59,9 @@ const main = async () => {
       return;
     }
 
-    // -------------------------------------------------------------------
-    // 3. REVIEWS – PROCESS APPROVAL STATES
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
+    // 3. FETCH ALL REVIEW COMMENTS
+    // -----------------------------------------------------------
     const { data: reviews } = await octokit.rest.pulls.listReviews({
       owner,
       repo,
@@ -73,21 +73,21 @@ const main = async () => {
       return;
     }
 
-    // Track most recent states for HUMAN reviewers
+    // Store only MOST RECENT review state for each HUMAN reviewer
     const latestStateByUser = {};
 
     for (const review of reviews) {
-      const login = review.user.login;
+      let login = review.user.login.toLowerCase();
 
-      // Always exclude bots/Copilot
+      // Exclude bots entirely
       if (EXCLUDED_REVIEWERS.includes(login)) continue;
 
-      latestStateByUser[login] = review.state; // APPROVED, COMMENTED, CHANGES_REQUESTED, DISMISSED
+      latestStateByUser[login] = review.state; // APPROVED / COMMENTED / CHANGES_REQUESTED
     }
 
-    // -------------------------------------------------------------------
-    // 4. DETERMINE WHO APPROVED VS NOT APPROVED
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
+    // 4. EVALUATE WHO APPROVED VS DID NOT APPROVE
+    // -----------------------------------------------------------
     const approvedUsers = [];
     const missingApprovals = [];
 
@@ -95,36 +95,41 @@ const main = async () => {
       if (state === "APPROVED") {
         approvedUsers.push(login);
       } else {
+        // COMMENTED / REQUEST_CHANGES => failure
         missingApprovals.push(`${login} (${state})`);
       }
     }
 
-    // -------------------------------------------------------------------
-    // 5. TEAM REVIEW APPROVAL CHECK (Option B)
-    // Only ONE approval from ANY team member required
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
+    // 5. TEAM REVIEW LOGIC (Option B)
+    // -----------------------------------------------------------
     if (pullRequest.requested_teams && pullRequest.requested_teams.length > 0) {
       for (const team of pullRequest.requested_teams) {
 
+        const teamSlug = team.slug.toLowerCase();
+
+        if (EXCLUDED_REVIEWERS.includes(teamSlug)) continue;
+
+        // Fetch team members
         const { data: teamMembers } = await octokit.rest.teams.listMembersInOrg({
           org: owner,
           team_slug: team.slug
         });
 
-        const teamMemberLogins = teamMembers.map(m => m.login);
+        const teamMemberLogins = teamMembers.map(m => m.login.toLowerCase());
 
-        // Check if ANY team member approved
-        const teamApproved = teamMemberLogins.some(m => approvedUsers.includes(m));
+        // Check if any team member approved
+        const anyApproved = teamMemberLogins.some(m => approvedUsers.includes(m));
 
-        if (!teamApproved) {
+        if (!anyApproved) {
           missingApprovals.push(`Team ${team.slug} (no member approved)`);
         }
       }
     }
 
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
     // 6. FINAL VALIDATION
-    // -------------------------------------------------------------------
+    // -----------------------------------------------------------
     if (missingApprovals.length > 0) {
       core.setFailed(
         `All reviewers must approve. Missing approvals: ${missingApprovals.join(", ")}`
