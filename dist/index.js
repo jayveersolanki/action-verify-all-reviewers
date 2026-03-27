@@ -8471,11 +8471,13 @@ var __webpack_exports__ = {};
 const core = __nccwpck_require__(2186);
 const github = __nccwpck_require__(5438);
 
+// Full exclusion list including Copilot PR Reviewer bot
 const EXCLUDED_REVIEWERS = [
-  "copilot", 
+  "copilot",
   "github-copilot",
   "github-actions[bot]",
-  "dependabot[bot]"
+  "dependabot[bot]",
+  "copilot-pull-request-reviewer[bot]"
 ];
 
 const main = async () => {
@@ -8491,7 +8493,7 @@ const main = async () => {
     let shouldMerge = true;
     //#endregion
 
-    //Get the current pr request
+    //Get the current PR request
     const { data: pullRequest } = await octokit.rest.pulls.get({
       owner: owner,
       repo: repo,
@@ -8502,6 +8504,7 @@ const main = async () => {
     const reviewers = pullRequest.requested_reviewers
       .filter(r => !EXCLUDED_REVIEWERS.includes(r.login));
 
+    // If any reviewers remain—they have not reviewed yet
     if (reviewers.length > 0) {
       core.setFailed(`${reviewers.length} reviewer(s) left to review (excluding bots).`);
       shouldMerge = false;
@@ -8517,31 +8520,33 @@ const main = async () => {
     if (reviewComments.length > 0) {
       const latestReviewByUser = {};
 
-      // Keep only final review state per user
+      // Capture only the most recent review state from each reviewer
       for (const review of reviewComments) {
         const login = review.user.login;
 
-        // Skip bots/copilot
+        // Skip Copilot/bots entirely
         if (EXCLUDED_REVIEWERS.includes(login)) continue;
 
-        // Save last review state
         latestReviewByUser[login] = review.state;
       }
 
       const approvedUsers = [];
       const missingApprovals = [];
 
-      for (const [user, state] of Object.entries(latestReviewByUser)) {
+      // Evaluate each reviewer’s final state
+      for (const [login, state] of Object.entries(latestReviewByUser)) {
         if (state === "APPROVED") {
-          approvedUsers.push(user);
+          approvedUsers.push(login);
         } else {
-          // COMMENTED / CHANGES_REQUESTED / DISMISSED are failures
-          missingApprovals.push(`${user} (${state})`);
+          missingApprovals.push(`${login} (${state})`);
         }
       }
 
+      // Fail if any human reviewer has not approved
       if (missingApprovals.length > 0) {
-        core.setFailed(`All reviewers must approve. Missing approvals: ${missingApprovals.join(", ")}`);
+        core.setFailed(
+          `All reviewers must approve. Missing approvals: ${missingApprovals.join(", ")}`
+        );
         shouldMerge = false;
       } else if (approvedUsers.length === 0) {
         core.setFailed(`No approvals found from human reviewers.`);
@@ -8556,7 +8561,7 @@ const main = async () => {
     }
     //#endregion
 
-    // Existing rerun logic untouched
+    // Existing rerun logic — unchanged
     if (eventName === "pull_request_review") {
       const { data: pullCommits } = await octokit.rest.pulls.listCommits({
         owner: owner,
@@ -8565,36 +8570,44 @@ const main = async () => {
       });
 
       const pullCommitsSHA = pullCommits[pullCommits.length - 1].sha;
-
       core.info(`Rerunning pull_request verification`);
 
-      const check_runs = (await octokit.rest.checks.listForRef({
-        owner: owner,
-        repo: repo,
-        ref: pullCommitsSHA
-      })).data.check_runs;
+      const check_runs = (
+        await octokit.rest.checks.listForRef({
+          owner: owner,
+          repo: repo,
+          ref: pullCommitsSHA
+        })
+      ).data.check_runs;
 
-      for (var check_run of check_runs) {
-        if (check_run.app.slug === 'github-actions') {
-          const job = (await octokit.rest.actions.getJobForWorkflowRun({
-            owner: owner,
-            repo: repo,
-            job_id: check_run.id,
-          })).data;
+      for (const check_run of check_runs) {
+        if (check_run.app.slug === "github-actions") {
+          const job = (
+            await octokit.rest.actions.getJobForWorkflowRun({
+              owner: owner,
+              repo: repo,
+              job_id: check_run.id
+            })
+          ).data;
 
-          const actions_run = (await octokit.rest.actions.getWorkflowRun({
-            owner: owner,
-            repo: repo,
-            run_id: job.run_id,
-          })).data;
+          const actions_run = (
+            await octokit.rest.actions.getWorkflowRun({
+              owner: owner,
+              repo: repo,
+              run_id: job.run_id
+            })
+          ).data;
 
           if (actions_run.event === "pull_request") {
             core.info(`Starting rerun post request`);
-            await octokit.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun', {
-              owner: owner,
-              repo: repo,
-              run_id: actions_run.id
-            });
+            await octokit.request(
+              "POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun",
+              {
+                owner: owner,
+                repo: repo,
+                run_id: actions_run.id
+              }
+            );
           }
         }
       }
